@@ -75,8 +75,10 @@ type ConsumerInfo struct {
 	// MaxDeliveryCount is the highest delivery count among the messages
 	// currently being redelivered, and MaxDeliveryStreamSeq is the stream
 	// sequence of that message. Both are 0 when nothing is being redelivered.
-	MaxDeliveryCount     uint64 `json:"max_delivery_count,omitempty"`
-	MaxDeliveryStreamSeq uint64 `json:"max_delivery_stream_seq,omitempty"`
+	// They are always reported, even when 0, so that a client can tell a server
+	// that has no redelivery apart from one that does not report them at all.
+	MaxDeliveryCount     uint64 `json:"max_delivery_count"`
+	MaxDeliveryStreamSeq uint64 `json:"max_delivery_stream_seq"`
 }
 
 // consumerInfoClusterResponse is a response used in a cluster to communicate the consumer info

@@ -107,7 +107,7 @@ func TestJetStreamConsumerInfoMaxDelivery(t *testing.T) {
 	require_Equal(t, raw["max_delivery_stream_seq"].(float64), 1)
 
 	// Acking the message clears the tracking, so the fields go back to zero
-	// and are omitted from the JSON.
+	// but are still reported.
 	m, err := nc.Request(o.requestNextMsgSubject(), nil, time.Second)
 	require_NoError(t, err)
 	require_NoError(t, m.AckSync())
@@ -121,6 +121,40 @@ func TestJetStreamConsumerInfoMaxDelivery(t *testing.T) {
 	require_NoError(t, err)
 	raw = nil
 	require_NoError(t, json.Unmarshal(data, &raw))
-	_, has := raw["max_delivery_count"]
-	require_False(t, has)
+	require_Equal(t, raw["max_delivery_count"].(float64), 0)
+	require_Equal(t, raw["max_delivery_stream_seq"].(float64), 0)
+}
+
+// With several messages being redelivered the consumer info must report the
+// one with the highest delivery count, not the first or the last one.
+func TestJetStreamConsumerInfoMaxDeliveryPicksHighest(t *testing.T) {
+	s := RunBasicJetStreamServer(t)
+	defer s.Shutdown()
+
+	mset, err := s.GlobalAccount().addStream(&StreamConfig{Name: "MD", Storage: MemoryStorage})
+	require_NoError(t, err)
+	defer mset.delete()
+
+	o, err := mset.addConsumer(workerModeConfig("WQ"))
+	require_NoError(t, err)
+	defer o.delete()
+
+	setRedelivered := func(rdc map[uint64]uint64) {
+		o.mu.Lock()
+		o.rdc = rdc
+		o.mu.Unlock()
+	}
+
+	// Message 2 has the highest count and is neither the first nor the last.
+	setRedelivered(map[uint64]uint64{1: 1, 2: 5, 3: 2})
+	ci := o.info()
+	require_Equal(t, ci.NumRedelivered, 3)
+	require_Equal(t, ci.MaxDeliveryCount, 6)
+	require_Equal(t, ci.MaxDeliveryStreamSeq, 2)
+
+	// With a tie the lowest sequence is reported.
+	setRedelivered(map[uint64]uint64{7: 3, 4: 3})
+	ci = o.info()
+	require_Equal(t, ci.MaxDeliveryCount, 4)
+	require_Equal(t, ci.MaxDeliveryStreamSeq, 4)
 }
