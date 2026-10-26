@@ -71,6 +71,14 @@ type ConsumerInfo struct {
 	// TimeStamp indicates when the info was gathered
 	TimeStamp      time.Time            `json:"ts"`
 	PriorityGroups []PriorityGroupState `json:"priority_groups,omitempty"`
+
+	// MaxDeliveryCount is the highest delivery count among the messages
+	// currently being redelivered, and MaxDeliveryStreamSeq is the stream
+	// sequence of that message. Both are 0 when nothing is being redelivered.
+	// They are always reported, even when 0, so that a client can tell a server
+	// that has no redelivery apart from one that does not report them at all.
+	MaxDeliveryCount     uint64 `json:"max_delivery_count"`
+	MaxDeliveryStreamSeq uint64 `json:"max_delivery_stream_seq"`
 }
 
 // consumerInfoClusterResponse is a response used in a cluster to communicate the consumer info
@@ -3604,10 +3612,12 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 		TimeStamp:      time.Now().UTC(),
 		PriorityGroups: priorityGroups,
 	}
+	info.MaxDeliveryCount, info.MaxDeliveryStreamSeq = maxDeliveryCount(o.rdc)
 	// Reset redelivered for MaxDeliver 1. Redeliveries are disabled so must not report it (is confusing otherwise).
 	// The state does still keep track of these messages.
 	if o.cfg.MaxDeliver == 1 {
 		info.NumRedelivered = 0
+		info.MaxDeliveryCount, info.MaxDeliveryStreamSeq = 0, 0
 	}
 	if o.cfg.PauseUntil != nil {
 		p := *o.cfg.PauseUntil
@@ -3635,6 +3645,10 @@ func (o *consumer) infoWithSnapAndReply(snap bool, reply string) *ConsumerInfo {
 		if !leader {
 			info.NumAckPending = len(state.Pending)
 			info.NumRedelivered = len(state.Redelivered)
+			info.MaxDeliveryCount, info.MaxDeliveryStreamSeq = maxDeliveryCount(state.Redelivered)
+			if o.cfg.MaxDeliver == 1 {
+				info.MaxDeliveryCount, info.MaxDeliveryStreamSeq = 0, 0
+			}
 		}
 	}
 
@@ -4836,6 +4850,21 @@ func trackDownAccountAndInterest(acc *Account, interest string) (*Account, strin
 		oa.mu.RUnlock()
 	}
 	return acc, interest
+}
+
+// maxDeliveryCount returns the highest delivery count found in a redelivery
+// map (stream sequence -> number of redeliveries) and the stream sequence of
+// that message. The delivery count is the number of redeliveries plus the
+// initial delivery, matching what the max deliveries advisory reports.
+// If several messages share the highest count the lowest sequence wins.
+// Returns 0, 0 when the map is empty.
+func maxDeliveryCount(rdc map[uint64]uint64) (count, seq uint64) {
+	for sseq, redeliveries := range rdc {
+		if dc := redeliveries + 1; dc > count || (dc == count && sseq < seq) {
+			count, seq = dc, sseq
+		}
+	}
+	return count, seq
 }
 
 // Return current delivery count for a given sequence.
